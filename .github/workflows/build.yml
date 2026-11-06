@@ -21,7 +21,7 @@ jobs:
           dotnet-version: 8.0.x
 
       # Tags must be vX.Y.Z: an MSI version has no room for a suffix. Other builds keep the
-      # project's version and mark only the file names.
+      # project's version; the label only names the uploaded artifact.
       - name: Version
         id: version
         shell: pwsh
@@ -38,7 +38,7 @@ jobs:
 
       - name: Build installer and portable zips
         shell: pwsh
-        run: ./build.ps1 -Release -Version ${{ steps.version.outputs.value }} -Label ${{ steps.version.outputs.label }}
+        run: ./build.ps1 -Release -Version ${{ steps.version.outputs.value }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -46,13 +46,28 @@ jobs:
           path: |
             artifacts/*.msi
             artifacts/*.zip
+            artifacts/SHA256SUMS.txt
           if-no-files-found: error
 
+      # File names stay the same from release to release, so the README's
+      # releases/latest/download links always fetch the newest build.
       - name: Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          name: AI Announce ${{ steps.version.outputs.value }}
+          body: |
+            ### Install
+
+            1. Download **AIAnnounce-win-x64.msi** below and run it.
+            2. It installs for your Windows account only, with no admin prompt, adds AI Announce to the Start menu, and starts the overlay. A newer MSI upgrades it in place; uninstall from Settings → Apps.
+            3. If Windows says it protected your PC, click **More info → Run anyway**. The installer isn't code-signed yet.
+
+            Rather not install? **AIAnnounce-win-x64-self-contained.zip** is the same program as a portable exe, no .NET needed. **AIAnnounce-win-x64-framework-dependent.zip** is much smaller and needs the [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) or newer. **SHA256SUMS.txt** has checksums for all three.
+
+            Needs Windows 10 or 11 and at least one of the CLIs it watches: Claude Code, Codex or agy.
           files: |
             artifacts/*.msi
             artifacts/*.zip
+            artifacts/SHA256SUMS.txt
           generate_release_notes: true

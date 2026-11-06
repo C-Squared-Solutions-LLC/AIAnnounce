@@ -7,17 +7,24 @@ Always-on-top Windows overlay listing every running Claude Code, Codex and agy (
 
 Windows 10/11 only. Unofficial; not affiliated with Anthropic, OpenAI or Google. It watches the CLIs you already run (`claude`, `codex`, `agy`), so install and sign in to those yourself.
 
+**[Download the installer](https://github.com/C-Squared-Solutions-LLC/AIAnnounce/releases/latest/download/AIAnnounce-win-x64.msi)** and run it. No admin needed. Other options are under [Install](#install).
+
 ![AI Announce with a demo set of sessions](docs/overlay.png)
 
 ## Install
 
-Grab a file from [Releases](https://github.com/C-Squared-Solutions-LLC/AIAnnounce/releases):
+1. Download **[AIAnnounce-win-x64.msi](https://github.com/C-Squared-Solutions-LLC/AIAnnounce/releases/latest/download/AIAnnounce-win-x64.msi)** from the [latest release](https://github.com/C-Squared-Solutions-LLC/AIAnnounce/releases/latest).
+2. Run it. It installs for your Windows account only, with no admin prompt, adds AI Announce to the Start menu, and starts the overlay.
+3. If Windows says it protected your PC, click **More info → Run anyway**. The installer isn't code-signed yet.
 
-- `AIAnnounce-<version>-win-x64.msi`: installs for your Windows account only, no admin prompt. Adds a Start menu entry and starts the overlay. A newer MSI upgrades it in place; uninstall from Settings → Apps.
-- `…-self-contained.zip`: the same program as a portable exe. No .NET install needed.
-- `…-framework-dependent.zip`: small, needs the [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) or newer.
+A newer MSI upgrades it in place. Uninstall from Settings → Apps.
 
-Unzip somewhere permanent before pinning it or turning on Start with Windows: both point at the exe where it sits. Builds aren't code-signed, so SmartScreen may stop the first run (More info → Run anyway).
+Rather not install? The latest release also has:
+
+- [`AIAnnounce-win-x64-self-contained.zip`](https://github.com/C-Squared-Solutions-LLC/AIAnnounce/releases/latest/download/AIAnnounce-win-x64-self-contained.zip): the same program as a portable exe. No .NET install needed.
+- [`AIAnnounce-win-x64-framework-dependent.zip`](https://github.com/C-Squared-Solutions-LLC/AIAnnounce/releases/latest/download/AIAnnounce-win-x64-framework-dependent.zip): much smaller, needs the [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) or newer.
+
+Unzip somewhere permanent before pinning it or turning on Start with Windows: both point at the exe where it sits. [`SHA256SUMS.txt`](https://github.com/C-Squared-Solutions-LLC/AIAnnounce/releases/latest/download/SHA256SUMS.txt) lists checksums for all three files.
 
 ## Privacy
 

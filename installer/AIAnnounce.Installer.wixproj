@@ -7,7 +7,7 @@
   <PropertyGroup>
     <Version Condition="'$(Version)' == ''">1.0.0</Version>
     <PublishDir Condition="'$(PublishDir)' == ''">$(MSBuildThisFileDirectory)..\artifacts\self-contained\</PublishDir>
-    <OutputName Condition="'$(OutputName)' == ''">AIAnnounce-$(Version)-win-x64</OutputName>
+    <OutputName Condition="'$(OutputName)' == ''">AIAnnounce-win-x64</OutputName>
     <InstallerPlatform>x64</InstallerPlatform>
     <DefineConstants>Version=$(Version);PublishDir=$(PublishDir)</DefineConstants>
     <!-- ICE91 flags per-user folders for per-machine installs; this package is per-user only. -->
