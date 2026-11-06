@@ -1,0 +1,58 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write # only used by the release step on tags
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      # Tags must be vX.Y.Z: an MSI version has no room for a suffix. Other builds keep the
+      # project's version and mark only the file names.
+      - name: Version
+        id: version
+        shell: pwsh
+        run: |
+          $base = ([xml](Get-Content AIAnnounce.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+          if ($env:GITHUB_REF -like 'refs/tags/v*') { $v = $env:GITHUB_REF_NAME.Substring(1); $label = $v }
+          else { $v = $base; $label = "$base-ci.$env:GITHUB_RUN_NUMBER" }
+          "value=$v" >> $env:GITHUB_OUTPUT
+          "label=$label" >> $env:GITHUB_OUTPUT
+          Write-Host "Version $v, files labeled $label"
+
+      - name: Regression checks
+        run: dotnet run --project tests/AIAnnounce.Tests.csproj -c Release
+
+      - name: Build installer and portable zips
+        shell: pwsh
+        run: ./build.ps1 -Release -Version ${{ steps.version.outputs.value }} -Label ${{ steps.version.outputs.label }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AIAnnounce-${{ steps.version.outputs.label }}
+          path: |
+            artifacts/*.msi
+            artifacts/*.zip
+          if-no-files-found: error
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.msi
+            artifacts/*.zip
+          generate_release_notes: true

@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <!-- .NET 8 support ends Nov 2026; run on whatever newer desktop runtime is installed -->
+    <RollForward>LatestMajor</RollForward>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>AIAnnounce</AssemblyName>
+    <RootNamespace>AIAnnounce</RootNamespace>
+    <Product>AI Announce</Product>
+    <AssemblyTitle>AI Announce</AssemblyTitle>
+    <Version>1.2.6</Version>
+    <Company>C-Squared Solutions LLC</Company>
+    <Authors>C-Squared Solutions LLC</Authors>
+    <Copyright>Copyright (c) 2026 C-Squared Solutions LLC</Copyright>
+    <Description>Always-on-top Windows overlay for Claude Code, Codex and agy sessions.</Description>
+    <RepositoryUrl>https://github.com/C-Squared-Solutions-LLC/AIAnnounce</RepositoryUrl>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <ApplicationIcon>assets\AIAnnounce.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="tests\**\*.cs" />
+    <InternalsVisibleTo Include="AIAnnounce.Tests" />
+  </ItemGroup>
+
+</Project>

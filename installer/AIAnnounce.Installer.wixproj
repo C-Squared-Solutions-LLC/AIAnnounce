@@ -1,0 +1,20 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+  <!--
+    Per-user MSI around the self-contained exe. build.ps1 -Release publishes that exe first and passes
+    Version and PublishDir. WiX comes from NuGet, so the .NET SDK is all this needs.
+    Pinned to WiX 5: version 6 onward needs its Open Source Maintenance Fee EULA accepted to build.
+  -->
+  <PropertyGroup>
+    <Version Condition="'$(Version)' == ''">1.0.0</Version>
+    <PublishDir Condition="'$(PublishDir)' == ''">$(MSBuildThisFileDirectory)..\artifacts\self-contained\</PublishDir>
+    <OutputName Condition="'$(OutputName)' == ''">AIAnnounce-$(Version)-win-x64</OutputName>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <DefineConstants>Version=$(Version);PublishDir=$(PublishDir)</DefineConstants>
+    <!-- ICE91 flags per-user folders for per-machine installs; this package is per-user only. -->
+    <SuppressIces>ICE91</SuppressIces>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixToolset.Util.wixext" Version="5.0.2" />
+  </ItemGroup>
+</Project>

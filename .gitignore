@@ -1,0 +1,9 @@
+bin/
+obj/
+dist/
+artifacts/
+# local scratch: diagnostics, screenshots, old builds
+build/
+.vs/
+*.user
+TestResults/

@@ -1,0 +1,59 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <!-- Per-user: no admin prompt, installs to %LOCALAPPDATA%\Programs\AI Announce. Never change UpgradeCode. -->
+  <Package Name="AI Announce"
+           Manufacturer="C-Squared Solutions LLC"
+           Version="$(var.Version)"
+           UpgradeCode="7B0191D8-D273-4EBA-897B-F1DC141E8905"
+           Language="1033"
+           Scope="perUser">
+
+    <SummaryInformation Description="AI Announce $(var.Version)" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of AI Announce is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="AppIcon" SourceFile="..\assets\AIAnnounce.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/C-Squared-Solutions-LLC/AIAnnounce" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <!-- A running overlay holds its exe open; ask it to close before the file is replaced or removed. -->
+    <util:CloseApplication Id="CloseOverlay" Target="AIAnnounce.exe" CloseMessage="yes" RebootPrompt="no" TerminateProcess="1" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="AI Announce" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <!-- Per-user components keep an HKCU value as their key path, as Windows Installer requires. A file
+         under a registry key path rules out a generated GUID, so this one is fixed. Never change it. -->
+    <ComponentGroup Id="App" Directory="INSTALLFOLDER">
+      <Component Id="Exe" Guid="E6B6407B-F14D-41E9-8905-48D9B886C652">
+        <File Id="AppExe" Source="$(var.PublishDir)AIAnnounce.exe" />
+        <!-- the shortcut lives with the file it starts, so neither can be installed without the other -->
+        <Shortcut Id="AppShortcut" Directory="ProgramMenuFolder" Name="AI Announce" Description="Overlay for Claude Code, Codex and agy sessions"
+                  Target="[#AppExe]" WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" />
+        <RegistryValue Root="HKCU" Key="Software\C-Squared Solutions\AI Announce" Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+        <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+        <RemoveFolder Id="RemoveProgramsFolder" Directory="ProgramsFolder" On="uninstall" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main">
+      <ComponentGroupRef Id="App" />
+    </Feature>
+
+    <!-- Uninstall: the exe removes its Start with Windows entry and any agy status line pointing at it. -->
+    <CustomAction Id="CleanUp" FileRef="AppExe" ExeCommand="--uninstall" Execute="deferred" Impersonate="yes" Return="ignore" />
+    <!-- Any install a person watched: start the overlay once it's in place. Silent installs (/qn) don't. -->
+    <CustomAction Id="Launch" Directory="INSTALLFOLDER" ExeCommand="&quot;[#AppExe]&quot;" Return="asyncNoWait" />
+
+    <InstallExecuteSequence>
+      <Custom Action="CleanUp" Before="RemoveFiles" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="Launch" After="InstallFinalize" Condition="NOT REMOVE AND UILevel &gt; 2" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>
