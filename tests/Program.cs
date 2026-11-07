@@ -176,6 +176,7 @@ static class Tests
         await ClaudeUsageChecks.Run(Check);
         await AgyFeedChecks.Run(Check);
         TopmostMenuChecks.Run(Check);
-        Console.WriteLine($"PASS: {checks} checks (quota schemas, credentials, diagnostics, menu z-order, pause/resume, persistence, identity and races)");
+        FinishChecks.Run(Check);
+        Console.WriteLine($"PASS: {checks} checks (quota schemas, credentials, diagnostics, menu z-order, pause/resume, persistence, identity, races and finish alerts)");
     }
 }

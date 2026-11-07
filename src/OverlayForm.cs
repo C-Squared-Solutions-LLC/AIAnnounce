@@ -100,6 +100,8 @@ sealed class OverlayForm : Form
     readonly ToolTip tip = new() { UseAnimation = false, UseFading = false };
     readonly List<Row> rows = new();
     readonly HashSet<string> announced = new();
+    readonly FinishWatch finishes = new();
+    readonly Dictionary<int, DateTime> quietUntil = new();  // pids the emergency stop just halted
     readonly HashSet<string> dismissed = new();
     readonly Dictionary<(string, Font), int> measured = new();
     RegisteredWaitHandle? showWait;
@@ -372,6 +374,30 @@ sealed class OverlayForm : Form
         announced.IntersectWith(active);
         dismissed.IntersectWith(active);
         firstSnapshot = false;
+        AnnounceFinished(s);
+    }
+
+    // A working session settled idle: its turn is done. Same rule as the needs-you alert (no toast for
+    // the terminal you're looking at), but quieter: the toast itself is silent, and the finish chime,
+    // when it's on, is a sound of its own.
+    void AnnounceFinished(Snapshot s)
+    {
+        DateTime now = DateTime.UtcNow;
+        foreach (int pid in quietUntil.Where(q => q.Value <= now).Select(q => q.Key).ToList()) quietUntil.Remove(pid);
+        foreach (var (sv, worked) in finishes.Update(s.Sessions, now))
+        {
+            // you stopped it from here; announcing that back would be noise
+            if (IsPaused(sv) || quietUntil.ContainsKey(sv.Pid)) continue;
+            bool watching = TerminalFocus.IsForeground(sv.TabTitles);
+            Log.Write($"finished: {sv.Title} after {Ago(worked)} " + (watching ? "(terminal focused, no toast)"
+                : !settings.FinishedNotify ? "(toasts off)" : settings.FinishedSound ? "(toast, chime)" : "(silent toast)"));
+            if (!settings.FinishedNotify || watching || tray == null) continue;
+            toastSession = sv;
+            string project = string.Equals(sv.Project, sv.Title, StringComparison.OrdinalIgnoreCase) ? "" : sv.Project;
+            TrayBalloon.ShowSilent(tray, ToolText.Clip($"✔ {sv.Title} finished", 63),
+                ToolText.Clip(JoinParts(sv.Product, project, $"worked {Ago(worked)}") ?? "", 250));
+            if (settings.FinishedSound) Chime.Play();
+        }
     }
 
     void UpdateTray()
@@ -1141,6 +1167,8 @@ sealed class OverlayForm : Form
         if (monitor == null || working.Count == 0) return;
         Log.Write($"emergency stop: {string.Join(", ", working.Select(s => $"{s.Title} ({s.Pid})"))}");
         stoppingUntil = DateTime.UtcNow.AddSeconds(3);
+        // the stop retries for up to 10 s; don't announce these as finished turns meanwhile
+        foreach (var s in working) quietUntil[s.Pid] = DateTime.UtcNow.AddSeconds(20);
         Invalidate();
         _ = SessionControl.Stop(working, monitor.StatusOf);
     }
@@ -1232,8 +1260,24 @@ sealed class OverlayForm : Form
     {
         items.Add(Toggle("Collapse", settings.Collapsed, () => settings.Collapsed = !settings.Collapsed));
         items.Add(Toggle("Hide idle sessions", settings.HideIdle, () => settings.HideIdle = !settings.HideIdle));
-        items.Add(Toggle("Notifications", settings.Notifications, () => settings.Notifications = !settings.Notifications));
-        items.Add(Toggle("Sound", settings.Sound, () => settings.Sound = !settings.Sound));
+        // Each alert's sound plays with its toast, so it's greyed out while that toast is off. Turning a
+        // sound on plays it once, so you know which is which.
+        var needsYou = new ToolStripMenuItem("When a session needs you");
+        needsYou.DropDownItems.Add(Toggle("Notify", settings.Notifications, () => settings.Notifications = !settings.Notifications));
+        needsYou.DropDownItems.Add(Toggle("Play a sound", settings.Sound, () =>
+        {
+            settings.Sound = !settings.Sound;
+            if (settings.Sound) SystemSounds.Exclamation.Play();
+        }, enabled: settings.Notifications));
+        items.Add(needsYou);
+        var finished = new ToolStripMenuItem("When a session finishes");
+        finished.DropDownItems.Add(Toggle("Notify", settings.FinishedNotify, () => settings.FinishedNotify = !settings.FinishedNotify));
+        finished.DropDownItems.Add(Toggle("Play a sound", settings.FinishedSound, () =>
+        {
+            settings.FinishedSound = !settings.FinishedSound;
+            if (settings.FinishedSound) Chime.Play();
+        }, enabled: settings.FinishedNotify));
+        items.Add(finished);
         var opacity = new ToolStripMenuItem("Opacity");
         foreach (int pct in new[] { 100, 90, 80, 70 })
             opacity.DropDownItems.Add(Toggle($"{pct}%", Math.Abs(settings.Opacity * 100 - pct) < 1,
@@ -1280,14 +1324,14 @@ sealed class OverlayForm : Form
         UpdateTaskbar();
     }
 
-    ToolStripMenuItem Toggle(string text, bool on, Action flip) =>
+    ToolStripMenuItem Toggle(string text, bool on, Action flip, bool enabled = true) =>
         new(text, null, (_, _) =>
         {
             flip();
             settings.Save();
             LayoutRows();
             Invalidate();
-        }) { Checked = on };
+        }) { Checked = on, Enabled = enabled };
 
     void SetOverlayVisible(bool visible)
     {

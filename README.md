@@ -39,6 +39,7 @@ Unzip somewhere permanent before pinning it or turning on Start with Windows: bo
 - **Agents.** Each running subagent with its type, description, and the tool it's on right now.
 - **Shells.** Foreground Bash/PowerShell commands, background shells (`run_in_background`, or a command auto-backgrounded after its timeout), long-running watcher loops.
 - **✋ Needs you.** Amber row, pulsing hand, and a toast when a session is blocked on you: permission prompt (shows the command or file), `AskUserQuestion` (shows the question), plan approval, MCP input. Also when Claude ended its last reply with a question.
+- **✔ Finished.** A toast when a working session settles idle, so you know its turn is done: "✔ Docs site finished", with how long it worked. Click it to jump to that terminal. The toast is silent by default; turn on **Play a sound** under **When a session finishes** for a short two-note chime that's distinct from the needs-you sound. Brief wake-ups don't count, a turn that ends on a question gets the needs-you alert instead, and sessions you paused or stopped from the overlay aren't announced.
 - **VRAM.** Used/total for the first NVIDIA GPU via NVML, with a bar. Hover the header for load %.
 - **Plan usage.** Separate Claude, Codex, and Gemini (agy) rows show session and weekly quotas **used**, with reset countdowns. agy usage comes exclusively from Gemini model quotas; Claude/GPT, non-Gemini, and shared account totals are excluded. Bars turn yellow at 70% and red at 90%. Hover for the source, freshness, exact reset times, and additional model limits; click to refresh. A dash means the window is not reported or its data is unavailable. Weekly-only Codex plans do not invent a session limit. Passed resets are marked until fresh data arrives.
 - **Taskbar button.** A pinnable, provider-neutral network icon, also used in the tray and header. Its progress bar is the usage limit closest to running out, it gets a ✋ badge while a session needs you, and hovering it shows the overlay as the thumbnail. Clicking it shows or hides the overlay.
@@ -112,7 +113,7 @@ These are internal formats of all three CLIs, and an update can change them. Che
 Launching it again while it runs just brings the overlay back if it was hidden.
 
 - Drag anywhere to move; it snaps to screen edges. Double-click the header to collapse it to one line.
-- Right-click, or the `⋯` button: hide idle sessions, notifications, sound, opacity, taskbar button, start with Windows, plan usage, refresh usage, reset position.
+- Right-click, or the `⋯` button: hide idle sessions, notifications and sounds (separately for **When a session needs you** and **When a session finishes**), opacity, taskbar button, start with Windows, plan usage, refresh usage, reset position. Turning a sound on plays it once.
 - Right-click a session: go to terminal, open folder, copy session ID, dismiss its ✋, restart it.
 - Tray icon: left-click toggles the overlay. The menu lists sessions that need you.
 
@@ -148,7 +149,7 @@ A poll costs ~2 ms. The expensive part is the process snapshot (~17 ms with ~900
 
 ## Notes
 
-- Windows holds back toasts while a fullscreen app or Do Not Disturb is active; they land silently in the Notification Center. The overlay still flags the session. Turn on **Sound** for an audible cue.
+- Windows holds back toasts while a fullscreen app or Do Not Disturb is active; they land silently in the Notification Center. The overlay still flags the session. Turn on **Play a sound** for an audible cue.
 - Tab switching is Windows Terminal specific. Other hosts (VS Code, conhost) get their window raised.
 - `CLAUDE_CONFIG_DIR` is honored; `--claude-dir <path>` overrides it.
 

@@ -95,8 +95,12 @@ sealed class Settings
     public bool Collapsed { get; set; }
     public bool HideIdle { get; set; }
     public bool Hidden { get; set; }
+    // a session needs you: toast with Windows' notification sound, plus the system Exclamation if Sound
     public bool Notifications { get; set; } = true;
     public bool Sound { get; set; }
+    // a working session went idle: a silent toast, plus the finish chime if FinishedSound
+    public bool FinishedNotify { get; set; } = true;
+    public bool FinishedSound { get; set; }
     public bool TaskbarButton { get; set; } = true;
     public double Opacity { get; set; } = 1.0;
     // Off: no login tokens are read and no quota requests leave the machine.
