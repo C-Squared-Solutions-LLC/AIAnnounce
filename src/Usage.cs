@@ -245,22 +245,30 @@ sealed class ClaudeUsageMonitor : IDisposable
             }
         }
 
-        if (limits.Count == 0)
+        // The named windows fill in whatever limits[] left out, so a 5-hour window reported only
+        // as five_hour still shows up next to limits[]'s weekly and model-scoped entries.
+        bool fromList = limits.Count > 0;
+        foreach (var (key, label) in new[] { ("five_hour", "Session"), ("seven_day", "Week"), ("seven_day_opus", "Opus wk"), ("seven_day_sonnet", "Sonnet wk") })
         {
-            foreach (var (key, label) in new[] { ("five_hour", "Session"), ("seven_day", "Week"), ("seven_day_opus", "Opus wk"), ("seven_day_sonnet", "Sonnet wk") })
-            {
-                var window = Json.Get(u, key);
-                if (window.ValueKind == JsonValueKind.Object && TryNumber(Json.Get(window, "utilization"), out double percent))
-                    limits.Add(new UsageLimit(label, percent, ParseTime(Json.Str(window, "resets_at")), ""));
-            }
+            if (fromList && key is not ("five_hour" or "seven_day")) continue;
+            if (limits.Any(l => l.Label == label)) continue;
+            var window = Json.Get(u, key);
+            if (window.ValueKind == JsonValueKind.Object && TryNumber(Json.Get(window, "utilization"), out double percent))
+                limits.Add(new UsageLimit(label, percent, ParseTime(Json.Str(window, "resets_at")), ""));
         }
-        return limits.Count == 0 ? null : new UsageInfo(limits, plan, fetchedAt, live);
+        // Stable: model-scoped limits keep the order Claude sent them in.
+        var ordered = limits.OrderBy(l => Rank(l.Label)).ToList();
+        return ordered.Count == 0 ? null : new UsageInfo(ordered, plan, fetchedAt, live);
     }
+
+    static int Rank(string label) => label switch { "Session" => 0, "Week" => 1, _ => 2 };
 
     static string LabelFor(JsonElement item)
     {
         string kind = Json.Str(item, "kind") ?? "";
-        if (kind == "session") return "Session";
+        string group = Json.Str(item, "group") ?? "";
+        bool scoped = Json.Get(item, "scope").ValueKind is JsonValueKind.Object or JsonValueKind.String;
+        if (!scoped && (kind is "session" or "five_hour" or "session_all" || group is "session" or "five_hour")) return "Session";
         if (kind == "weekly_all") return "Week";
         // weekly_scoped: "scope": { "model": { "display_name": "Fable" }, "surface": null }
         var scope = Json.Get(item, "scope");
@@ -273,7 +281,7 @@ sealed class ClaudeUsageMonitor : IDisposable
             _ => null,
         };
         if (!string.IsNullOrWhiteSpace(scopeName))
-            return Json.Str(item, "group") == "weekly" ? $"{scopeName} wk" : scopeName!;
+            return group switch { "weekly" => $"{scopeName} wk", "session" or "five_hour" => $"{scopeName} 5h", _ => scopeName! };
         return kind.Length == 0 ? "Limit" : char.ToUpperInvariant(kind[0]) + kind[1..].Replace('_', ' ');
     }
 

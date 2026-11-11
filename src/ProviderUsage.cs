@@ -99,6 +99,16 @@ static class UsageParsing
             ?? new UsageLimit(label, 0, null, "", false, missing)).Concat(all.Where(l => l.Label is not ("Session" or "Week"))).ToList();
     }
 
+    // The cells a usage row draws: session and week, then model-scoped limits such as
+    // "Fable wk". With three or more limits, a placeholder for a window the plan doesn't
+    // report gives up its cell to a real one. Never fewer than two cells, never more than three.
+    public static IReadOnlyList<UsageLimit> Shown(IEnumerable<UsageLimit> limits, string missing)
+    {
+        var cells = Windows(limits, missing).ToList();
+        while (cells.Count > 2 && cells.FindLastIndex(l => !l.Available) is int i and >= 0) cells.RemoveAt(i);
+        return cells.Take(3).ToList();
+    }
+
     public static UsageInfo Cached(UsageInfo info, string message) => info with { Live = false, Message = message };
 
     // No redirects: bearer tokens are sent only to the intended provider host.

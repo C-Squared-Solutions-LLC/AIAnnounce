@@ -56,6 +56,47 @@ static class ClaudeUsageChecks
         rateLimited = false;
         using (var recovered = new ClaudeUsageMonitor(dir, http, state))
             check((await recovered.RefreshAsync())!.Live, "Claude retries successfully after the saved cooldown expires");
+        // Shape of a 2026 plan response: a weekly limit plus a Fable-scoped weekly limit, no session window.
+        var scopedHandler = new Handler(() => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""
+            {"five_hour":null,"seven_day":{"utilization":3,"resets_at":"2099-11-18T12:59:59Z"},"limits":[
+              {"kind":"weekly_all","group":"weekly","percent":3,"severity":"normal","resets_at":"2099-11-18T12:59:59Z","scope":null},
+              {"kind":"weekly_scoped","group":"weekly","percent":4,"severity":"normal","resets_at":"2099-11-18T12:59:59Z",
+               "scope":{"model":{"id":null,"display_name":"Fable"},"surface":null}}]}
+            """) });
+        using var scopedHttp = new HttpClient(scopedHandler);
+        using (var scoped = new ClaudeUsageMonitor(dir, scopedHttp, Path.Combine(dir, "scoped.json")))
+        {
+            var info = (await scoped.RefreshAsync())!;
+            var cells = UsageParsing.Shown(info.Limits, "No data reported.");
+            check(cells.Select(c => c.Label).SequenceEqual(new[] { "Week", "Fable wk" }) && cells[1].Percent == 4,
+                "The Fable weekly limit takes the cell of a session window the plan doesn't report");
+        }
+        async Task<IReadOnlyList<string>> Cells(string body)
+        {
+            using var h = new HttpClient(new Handler(() => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) }));
+            using var m = new ClaudeUsageMonitor(dir, h, Path.Combine(dir, Guid.NewGuid().ToString("N") + ".json"));
+            var info = (await m.RefreshAsync())!;
+            return UsageParsing.Shown(info.Limits, "").Select(c => c.Available ? $"{c.Label} {c.Percent:0}" : $"{c.Label} -").ToList();
+        }
+        const string fiveHour = "\"five_hour\":{\"utilization\":55,\"resets_at\":\"2099-11-11T18:00:00Z\"}";
+        const string week = """{"kind":"weekly_all","group":"weekly","percent":30,"resets_at":"2099-11-18T12:59:59Z","scope":null}""";
+        const string fable = """{"kind":"weekly_scoped","group":"weekly","percent":20,"resets_at":"2099-11-18T12:59:59Z","scope":{"model":{"display_name":"Fable"},"surface":null}}""";
+        const string session = """{"kind":"session","group":"session","percent":55,"resets_at":"2099-11-11T18:00:00Z","scope":null}""";
+        var listed = await Cells("{" + fiveHour + ",\"limits\":[" + week + "," + fable + "," + session + "]}");
+        check(listed.SequenceEqual(new[] { "Session 55", "Week 30", "Fable wk 20" }),
+            "A 5-hour plan shows session, week and Fable, session first wherever limits[] lists it");
+        var named = await Cells("{" + fiveHour + ",\"limits\":[" + week + "," + fable + "]}");
+        check(named.SequenceEqual(new[] { "Session 55", "Week 30", "Fable wk 20" }),
+            "A 5-hour window reported only as five_hour still joins limits[]'s weekly entries");
+
+        var withSession = UsageParsing.Shown(new[] {
+            new UsageLimit("Session", 40, null, ""), new UsageLimit("Week", 70, null, ""),
+            new UsageLimit("Fable wk", 31, null, ""), new UsageLimit("Opus wk", 12, null, "") }, "");
+        check(withSession.Select(c => c.Label).SequenceEqual(new[] { "Session", "Week", "Fable wk" }),
+            "Session, week and the first model limit share the row; the rest stay in the tooltip");
+        check(UsageParsing.Shown(new[] { new UsageLimit("Week", 70, null, "") }, "").Select(c => c.Label).SequenceEqual(new[] { "Session", "Week" }),
+            "Without a model limit the row still shows both windows");
+
         using var empty = new ClaudeUsageMonitor(Path.Combine(dir, "no-login"), http, Path.Combine(dir, "no-login-state.json"));
         check((await empty.RefreshAsync())!.Message!.Contains("No saved Claude login"), "Missing credentials retain a distinct diagnostic");
     }

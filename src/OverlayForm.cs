@@ -647,8 +647,8 @@ sealed class OverlayForm : Form
         g.DrawRectangle(pen, 0, 0, size.Width - 1, size.Height - 1);
     }
 
-    // Plan usage under the header: session window and weekly window, plus any model-scoped
-    // weekly limit once it's worth looking at. Every limit is in the tooltip.
+    // Plan usage under the header: session window, weekly window and a model-scoped weekly
+    // limit when the plan has one. Every limit is in the tooltip.
     void PaintUsage(Graphics g, Row row, bool hovered)
     {
         var r = row.Bounds;
@@ -662,8 +662,8 @@ sealed class OverlayForm : Form
         Draw(g, label, fonts.Tag, new Rectangle(r.Left + Px(32), r.Top, Px(74), info.Scope == null ? r.Height : Px(16)), BrandIcons.ColorFor(info.Provider));
         if (info.Scope != null)
             Draw(g, info.Scope, fonts.Tag, new Rectangle(r.Left + Px(32), r.Top + Px(14), Px(76), Px(14)), Palette.Dim);
-        var shown = UsageParsing.Windows(info.Limits, "No data reported.").Take(2).ToList();
-        int cellWidth = (r.Right - Px(10) - left) / 2;
+        var shown = UsageParsing.Shown(info.Limits, "No data reported.");
+        int cellWidth = (r.Right - Px(10) - left) / shown.Count;
         for (int i = 0; i < shown.Count; i++)
             PaintLimit(g, new Rectangle(left + i * cellWidth, r.Top, cellWidth - Px(12), r.Height), shown[i]);
     }
