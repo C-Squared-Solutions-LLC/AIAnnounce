@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text.Json;
@@ -105,6 +106,10 @@ sealed class Settings
     public double Opacity { get; set; } = 1.0;
     // Off: no login tokens are read and no quota requests leave the machine.
     public bool PlanUsage { get; set; } = true;
+    // "Claude|Fable wk" -> 90: pause that provider's sessions when the limit reaches 90%.
+    public Dictionary<string, int> PauseAt { get; set; } = new();
+    // limits that tripped and haven't dropped back below; true once you dismissed the red banner
+    public Dictionary<string, bool> LimitTrips { get; set; } = new();
 
     public static string Dir =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AIAnnounce");

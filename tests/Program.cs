@@ -177,6 +177,7 @@ static class Tests
         await AgyFeedChecks.Run(Check);
         TopmostMenuChecks.Run(Check);
         FinishChecks.Run(Check);
-        Console.WriteLine($"PASS: {checks} checks (quota schemas, credentials, diagnostics, menu z-order, pause/resume, persistence, identity, races and finish alerts)");
+        LimitGuardChecks.Run(Check);
+        Console.WriteLine($"PASS: {checks} checks (quota schemas, credentials, diagnostics, menu z-order, pause/resume, persistence, identity, races, finish alerts and limit pauses)");
     }
 }

@@ -34,6 +34,10 @@ static class Palette
     public static readonly Color GpuHot = Color.FromArgb(235, 87, 87);
     public static readonly Color Codex = Color.FromArgb(214, 214, 224);
     public static readonly Color Agy = Color.FromArgb(129, 212, 140);
+    // a usage limit you set a pause for was hit: the whole overlay goes red until it's dealt with
+    public static readonly Color LimitBackground = Color.FromArgb(48, 16, 20);
+    public static readonly Color LimitHeader = Color.FromArgb(120, 26, 32);
+    public static readonly Color LimitBand = Color.FromArgb(150, 34, 40);
 }
 
 sealed class OverlayFonts : IDisposable
@@ -68,12 +72,12 @@ sealed class OverlayFonts : IDisposable
 
 sealed class OverlayForm : Form
 {
-    enum RowKind { Header, Usage, Session, Attention, Activity, Item, Summary, Notice, Empty, Footer }
+    enum RowKind { Header, Usage, Limit, Session, Attention, Activity, Item, Summary, Notice, Empty, Footer }
 
     sealed record Row(RowKind Kind, Rectangle Bounds, SessionView? Session = null, ItemView? Item = null, string? Text = null, UsageInfo? Usage = null);
 
     const int WidthDip = 460;
-    const int HeaderDip = 34, UsageDip = 30, SessionDip = 26, LineDip = 20, FooterDip = 22;
+    const int HeaderDip = 34, UsageDip = 30, LimitDip = 42, SessionDip = 26, LineDip = 20, FooterDip = 22;
 
     // Claude Code's own spinner frames
     static readonly string[] Spinner = { "·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢" };
@@ -92,8 +96,13 @@ sealed class OverlayForm : Form
     IReadOnlyList<UsageInfo> usage = Array.Empty<UsageInfo>();
     readonly SessionPause? pause;
     readonly bool previewPaused;
-    bool hoverPause;
-    Rectangle pauseButton;
+    bool hoverPause, hoverHide;
+    Rectangle pauseButton, hideButton;
+    readonly LimitGuard limits;
+    List<LimitGuard.Trip> limitHits = new();
+    readonly HashSet<Cli> limitPausePending = new();
+    Icon? limitIcon;
+    bool LimitHit => limitHits.Count > 0;
     readonly System.Windows.Forms.Timer animation = new() { Interval = 60 };
     readonly System.Windows.Forms.Timer housekeeping = new() { Interval = 1000 };
     readonly System.Windows.Forms.Timer hoverDelay = new() { Interval = 450 };
@@ -111,7 +120,7 @@ sealed class OverlayForm : Form
     float scale;
     bool firstSnapshot = true;
     int ticks, hover = -1;
-    bool hoverMenu, hoverStop, pressed, dragging, trayAlert, pulsing, closingButton;
+    bool hoverMenu, hoverStop, pressed, dragging, pulsing, closingButton;
     int hoverRestartPid;
     Rectangle menuButton, alertPill, stopButton, paintClip;
     DateTime stopArmedUntil, stoppingUntil;
@@ -120,9 +129,18 @@ sealed class OverlayForm : Form
     DateTime flashUntil;
     SessionView? toastSession;
 
-    public OverlayForm(string claudeDir, EventWaitHandle? showSignal, Snapshot? fixedSnapshot = null, IReadOnlyList<UsageInfo>? fixedUsage = null, bool previewPaused = false)
+    public OverlayForm(string claudeDir, EventWaitHandle? showSignal, Snapshot? fixedSnapshot = null, IReadOnlyList<UsageInfo>? fixedUsage = null,
+        bool previewPaused = false, string? previewLimitHit = null)
     {
         settings = fixedSnapshot == null ? Settings.Load() : new Settings();
+        settings.PauseAt ??= new();
+        settings.LimitTrips ??= new();
+        if (previewLimitHit != null)
+        {
+            settings.PauseAt[previewLimitHit] = 90;
+            settings.LimitTrips[previewLimitHit] = false;
+        }
+        limits = new LimitGuard(settings.PauseAt, settings.LimitTrips);
         this.previewPaused = previewPaused;
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
@@ -140,6 +158,7 @@ sealed class OverlayForm : Form
         {
             snapshot = fixedSnapshot;
             usage = fixedUsage ?? Array.Empty<UsageInfo>();
+            limitHits = limits.Active(usage);
             LayoutRows();
             return;
         }
@@ -148,6 +167,7 @@ sealed class OverlayForm : Form
         idleIcon = BrandIcons.AppIcon();
         Icon = idleIcon;
         alertIcon = TrayIcon(Palette.Amber, "✋", "Segoe UI Emoji");
+        limitIcon = TrayIcon(Palette.GpuHot, "!", "Segoe UI Black");
         tray = new NotifyIcon { Icon = idleIcon, Text = "AI Announce", Visible = true, ContextMenuStrip = new TopmostMenu() };
         tray.ContextMenuStrip.Opening += (_, e) =>
         {
@@ -196,7 +216,7 @@ sealed class OverlayForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        int on = 1, round = 2, border = ColorTranslator.ToWin32(Palette.Border);
+        int on = 1, round = 2, border = ColorTranslator.ToWin32(LimitHit ? Palette.GpuHot : Palette.Border);
         Native.DwmSetWindowAttribute(Handle, Native.DWMWA_USE_IMMERSIVE_DARK_MODE, ref on, sizeof(int));
         Native.DwmSetWindowAttribute(Handle, Native.DWMWA_WINDOW_CORNER_PREFERENCE, ref round, sizeof(int));
         Native.DwmSetWindowAttribute(Handle, Native.DWMWA_BORDER_COLOR, ref border, sizeof(int));
@@ -267,6 +287,7 @@ sealed class OverlayForm : Form
     {
         snapshot = s;
         _ = pause?.MaintainAsync();
+        FlushLimitPause();
         restarting.IntersectWith(s.Sessions.Select(x => x.Pid));  // finished ones are gone
         Announce(s);
         LayoutRows();
@@ -283,6 +304,7 @@ sealed class OverlayForm : Form
     {
         usage = u;
         UsageDiagnostics.Save(u);
+        CheckLimits();
         LayoutRows();
         Invalidate();
         UpdateTray();
@@ -299,6 +321,7 @@ sealed class OverlayForm : Form
         var parts = new List<string>();
         foreach (var u in usage)
             if (u.Limits.Any(l => l.Available)) parts.Add(u.DisplayName + " " + string.Join(" / ", u.Limits.Take(2).Select(l => l.Available ? $"{l.Label} {l.Percent:0}%" : $"{l.Label} —")));
+        if (LimitHit) parts.Add("limit hit");
         if (PausedCount > 0) parts.Add($"{PausedCount} paused");
         parts.Add($"{busy}/{snapshot.Sessions.Count} working");
         if (alerts > 0) parts.Add($"{alerts} need{(alerts == 1 ? "s" : "")} you");
@@ -310,7 +333,8 @@ sealed class OverlayForm : Form
         if (taskbarButton == null) return;
         int alerts = snapshot.Sessions.Count(IsAlert);
         taskbarButton.SetStatus($"AI Announce · {StatusLine()}", Headline(),
-            alerts > 0 ? alertIcon : null, alerts > 0 ? $"{alerts} session(s) need you" : null);
+            alerts > 0 ? alertIcon : LimitHit ? limitIcon : null,
+            alerts > 0 ? $"{alerts} session(s) need you" : LimitHit ? "Usage limit hit" : null);
     }
 
     void SetTaskbarButton(bool on)
@@ -404,12 +428,8 @@ sealed class OverlayForm : Form
     {
         if (tray == null) return;
         int alerts = snapshot.Sessions.Count(IsAlert);
-        int busy = snapshot.Sessions.Count(x => x.State == SessionState.Busy);
-        if (trayAlert != alerts > 0)
-        {
-            trayAlert = alerts > 0;
-            tray.Icon = trayAlert ? alertIcon : idleIcon;
-        }
+        Icon? icon = alerts > 0 ? alertIcon : LimitHit ? limitIcon : idleIcon;
+        if (tray.Icon != icon) tray.Icon = icon;
         string text = "AI Announce: " + StatusLine();
         if (tray.Text != text) tray.Text = ToolText.Clip(text, 127);
     }
@@ -477,6 +497,11 @@ sealed class OverlayForm : Form
         {
             into.Add(new Row(RowKind.Usage, new Rectangle(0, y, width, Px(UsageDip)), Usage: provider));
             y += Px(UsageDip);
+        }
+        if (LimitHit)
+        {
+            into.Add(new Row(RowKind.Limit, new Rectangle(0, y, width, Px(LimitDip))));
+            y += Px(LimitDip);
         }
         if (pause?.Error is string error)
         {
@@ -610,7 +635,7 @@ sealed class OverlayForm : Form
     {
         paintClip = clip;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        Fill(g, clip, Palette.Background);
+        Fill(g, clip, LimitHit ? Palette.LimitBackground : Palette.Background);
         DateTime now = DateTime.UtcNow;
         for (int i = 0; i < list.Count; i++)
         {
@@ -621,6 +646,7 @@ sealed class OverlayForm : Form
             {
                 case RowKind.Header: PaintHeader(g, row.Bounds); break;
                 case RowKind.Usage: PaintUsage(g, row, hovered); break;
+                case RowKind.Limit: PaintLimitHit(g, row, hovered); break;
                 case RowKind.Notice:
                     Draw(g, row.Text ?? "", fonts.Small, Inset(row.Bounds, Px(10), Px(10)), Palette.Amber);
                     break;
@@ -643,8 +669,9 @@ sealed class OverlayForm : Form
             }
         }
         g.SmoothingMode = SmoothingMode.None;
-        using var pen = new Pen(Palette.Border);
-        g.DrawRectangle(pen, 0, 0, size.Width - 1, size.Height - 1);
+        using var pen = new Pen(LimitHit ? Palette.GpuHot : Palette.Border, LimitHit ? Px(2) : 1);
+        int inset = LimitHit ? Px(1) : 0;
+        g.DrawRectangle(pen, inset, inset, size.Width - 1 - 2 * inset, size.Height - 1 - 2 * inset);
     }
 
     // Plan usage under the header: session window, weekly window and a model-scoped weekly
@@ -653,26 +680,46 @@ sealed class OverlayForm : Form
     {
         var r = row.Bounds;
         var info = row.Usage!;
-        Fill(g, r, hovered ? Palette.Hover : Palette.Header);
+        bool hit = limitHits.Any(t => t.Provider == info.Provider);
+        Fill(g, r, hit ? Palette.LimitBand : hovered ? Palette.Hover : Palette.Header);
         using (var pen = new Pen(Color.FromArgb(30, 255, 255, 255)))
             g.DrawLine(pen, r.Left + Px(10), r.Top, r.Right - Px(10), r.Top);
         BrandIcons.DrawProvider(g, new Rectangle(r.Left + Px(10), r.Top + Px(7), Px(16), Px(16)), info.Provider);
         int left = r.Left + Px(112);
         string label = info.ProviderName;
-        Draw(g, label, fonts.Tag, new Rectangle(r.Left + Px(32), r.Top, Px(74), info.Scope == null ? r.Height : Px(16)), BrandIcons.ColorFor(info.Provider));
+        Draw(g, label, fonts.Tag, new Rectangle(r.Left + Px(32), r.Top, Px(74), info.Scope == null ? r.Height : Px(16)), hit ? Color.White : BrandIcons.ColorFor(info.Provider));
         if (info.Scope != null)
             Draw(g, info.Scope, fonts.Tag, new Rectangle(r.Left + Px(32), r.Top + Px(14), Px(76), Px(14)), Palette.Dim);
         var shown = UsageParsing.Shown(info.Limits, "No data reported.");
         int cellWidth = (r.Right - Px(10) - left) / shown.Count;
         for (int i = 0; i < shown.Count; i++)
-            PaintLimit(g, new Rectangle(left + i * cellWidth, r.Top, cellWidth - Px(12), r.Height), shown[i]);
+            PaintLimit(g, new Rectangle(left + i * cellWidth, r.Top, cellWidth - Px(12), r.Height), shown[i],
+                limitHits.Any(t => t.Key == LimitGuard.KeyFor(info.Provider, shown[i].Label)), onRed: hit);
     }
 
-    void PaintLimit(Graphics g, Rectangle cell, UsageLimit limit)
+    // The banner under the usage rows while a limit you set a pause for is hit.
+    void PaintLimitHit(Graphics g, Row row, bool hovered)
     {
-        Color color = limit.Critical ? Palette.GpuHot : limit.Warning ? Palette.Amber : Palette.Shell;
+        var r = row.Bounds;
+        Fill(g, r, hovered ? Palette.LimitHeader : Palette.LimitBand);
+        Fill(g, new Rectangle(r.Left, r.Top, Px(4), r.Height), Palette.GpuHot);
+        int half = r.Height / 2;
+        string what = string.Join(", ", limitHits.GroupBy(t => t.ProviderName)
+            .Select(p => p.Key + " " + string.Join(", ", p.Select(t => $"{t.Label} {t.Percent:0}%"))));
+        int paused = PausedCount;
+        Draw(g, $"⛔ Limit hit: {what}" + (paused > 0 ? $" · {paused} paused" : ""), fonts.Name,
+            new Rectangle(r.Left + Px(12), r.Top + Px(3), r.Width - Px(22), half - Px(1)), Color.White);
+        Draw(g, paused > 0 ? "Switch accounts, then press ▶ Play to resume them. Click to dismiss."
+                           : "Switch accounts before starting more work. Click to dismiss.", fonts.Small,
+            new Rectangle(r.Left + Px(12), r.Top + half, r.Width - Px(22), half - Px(3)), Palette.AmberText);
+    }
+
+    void PaintLimit(Graphics g, Rectangle cell, UsageLimit limit, bool tripped = false, bool onRed = false)
+    {
+        Color color = tripped ? Color.White : limit.Critical ? Palette.GpuHot : limit.Warning ? Palette.Amber : Palette.Shell;
         int labelWidth = Measure(limit.Label, fonts.Tag);
-        Draw(g, limit.Label, fonts.Tag, new Rectangle(cell.Left, cell.Top, labelWidth + 1, cell.Height), Palette.Faint);
+        Draw(g, limit.Label, fonts.Tag, new Rectangle(cell.Left, cell.Top, labelWidth + 1, cell.Height),
+            tripped ? Palette.AmberText : onRed ? Palette.Soft : Palette.Faint);
 
         bool expired = limit.ResetsAt <= DateTime.UtcNow;
         if (!limit.Available || expired)
@@ -695,7 +742,7 @@ sealed class OverlayForm : Form
         x = bar.Right + Px(6);
         Draw(g, percent, fonts.Name, new Rectangle(x, cell.Top, percentWidth + 1, cell.Height), color);
         if (showReset)
-            Draw(g, reset, fonts.Small, new Rectangle(x + percentWidth + Px(6), cell.Top, resetWidth + 1, cell.Height), Palette.Faint);
+            Draw(g, reset, fonts.Small, new Rectangle(x + percentWidth + Px(6), cell.Top, resetWidth + 1, cell.Height), onRed ? Palette.Soft : Palette.Faint);
     }
 
     static string Countdown(TimeSpan t)
@@ -708,11 +755,16 @@ sealed class OverlayForm : Form
 
     void PaintHeader(Graphics g, Rectangle r)
     {
-        Fill(g, r, Palette.Header);
+        Fill(g, r, LimitHit ? Palette.LimitHeader : Palette.Header);
         int alerts = snapshot.Sessions.Count(IsAlert);
         int busy = snapshot.Sessions.Count(s => s.IsWorking && !IsPaused(s));
-        BrandIcons.DrawApp(g, new Rectangle(r.Left + Px(9), r.Top + Px(6), Px(22), Px(22)));
-        int x = r.Left + Px(37);
+        // minimize: hides the overlay; the tray icon or taskbar button brings it back
+        hideButton = new Rectangle(r.Left + Px(5), r.Top + Px(5), Px(24), r.Height - Px(10));
+        if (hoverHide) FillRound(g, hideButton, Px(5), LimitHit ? Palette.LimitBand : Palette.Hover);
+        Fill(g, new Rectangle(hideButton.Left + Px(7), hideButton.Top + hideButton.Height / 2 + Px(2), hideButton.Width - Px(14), Math.Max(1, Px(2))),
+            hoverHide ? Palette.Text : Palette.Dim);
+        BrandIcons.DrawApp(g, new Rectangle(r.Left + Px(33), r.Top + Px(6), Px(22), Px(22)));
+        int x = r.Left + Px(61);
         int titleWidth = Measure("AI Announce", fonts.Title);
         Draw(g, "AI Announce", fonts.Title, new Rectangle(x, r.Top, titleWidth + 2, r.Height), Palette.Text);
         x += titleWidth + Px(8);
@@ -944,17 +996,20 @@ sealed class OverlayForm : Form
         bool overMenu = menuButton.Contains(e.Location);
         bool overStop = stopButton.Contains(e.Location);
         bool overPause = pauseButton.Contains(e.Location);
+        bool overHide = hideButton.Contains(e.Location);
         int overRestart = index >= 0 && rows[index].Kind == RowKind.Session && rows[index].Session is SessionView rs &&
                           ShowRestart(rs) && RestartButton(rows[index].Bounds).Contains(e.Location)
             ? rs.Pid
             : 0;
-        if (index == hover && overMenu == hoverMenu && overStop == hoverStop && overPause == hoverPause && overRestart == hoverRestartPid) return;
+        if (index == hover && overMenu == hoverMenu && overStop == hoverStop && overPause == hoverPause && overHide == hoverHide &&
+            overRestart == hoverRestartPid) return;
         hover = index;
         hoverMenu = overMenu;
         hoverStop = overStop;
         hoverPause = overPause;
+        hoverHide = overHide;
         hoverRestartPid = overRestart;
-        Cursor = overMenu || overStop || overPause || (index >= 0 && rows[index].Kind is not RowKind.Header and not RowKind.Empty and not RowKind.Footer)
+        Cursor = overMenu || overStop || overPause || overHide || (index >= 0 && rows[index].Kind is not RowKind.Header and not RowKind.Empty and not RowKind.Footer)
             ? Cursors.Hand
             : Cursors.Default;
         tip.Hide(this);
@@ -967,7 +1022,7 @@ sealed class OverlayForm : Form
     {
         base.OnMouseLeave(e);
         hover = -1;
-        hoverMenu = hoverStop = hoverPause = false;
+        hoverMenu = hoverStop = hoverPause = hoverHide = false;
         hoverRestartPid = 0;
         hoverDelay.Stop();
         tip.Hide(this);
@@ -998,6 +1053,11 @@ sealed class OverlayForm : Form
             ShowMenu(new Point(menuButton.Left, menuButton.Bottom), null);
             return;
         }
+        if (hideButton.Contains(e.Location))
+        {
+            SetOverlayVisible(false);
+            return;
+        }
         if (pauseButton.Contains(e.Location))
         {
             TogglePause();
@@ -1020,6 +1080,10 @@ sealed class OverlayForm : Form
         {
             _ = usageMonitor?.RefreshAsync();
         }
+        else if (row.Kind == RowKind.Limit)
+        {
+            DismissLimitHit();
+        }
         else if (row.Kind == RowKind.Summary)
         {
             settings.HideIdle = false;
@@ -1036,7 +1100,7 @@ sealed class OverlayForm : Form
     protected override void OnMouseDoubleClick(MouseEventArgs e)
     {
         base.OnMouseDoubleClick(e);
-        if (pauseButton.Contains(e.Location) || stopButton.Contains(e.Location) || menuButton.Contains(e.Location)) return;
+        if (pauseButton.Contains(e.Location) || stopButton.Contains(e.Location) || menuButton.Contains(e.Location) || hideButton.Contains(e.Location)) return;
         int i = HitIndex(e.Location);
         if (e.Button == MouseButtons.Left && i >= 0 && rows[i].Kind == RowKind.Header && !menuButton.Contains(e.Location))
         {
@@ -1074,6 +1138,7 @@ sealed class OverlayForm : Form
 
     string? TipFor(Row row)
     {
+        if (hoverHide) return "Hide the overlay.\nClick the tray icon or the taskbar button to bring it back.";
         if (hoverPause) return PausedCount > 0
             ? $"Play: resume the {PausedCount} session(s) paused by this button.\nPending approvals must be answered in their terminals."
             : "Pause all working sessions and their agents until you click Play.\nSessions that were already idle stay idle.";
@@ -1115,6 +1180,11 @@ sealed class OverlayForm : Form
                 return "Click to show idle sessions";
             case RowKind.Notice:
                 return row.Text;
+            case RowKind.Limit:
+                var hit = limitHits.Select(t => $"{t.ProviderName} {t.Label}: {t.Percent:0}% used, pause set at {t.Threshold}%").ToList();
+                hit.Add("Sessions of that provider that were working are paused. Switch accounts, then press Play.");
+                hit.Add("Stays red until the limit reads below its setting again (new account or window reset), or you click to dismiss.");
+                return string.Join("\n", hit);
             case RowKind.Usage when row.Usage is UsageInfo u:
                 DateTime now = DateTime.UtcNow;
                 var limits = new List<string> { $"{u.DisplayName} {u.Plan ?? ""} · quota used".Replace("  ", " ") };
@@ -1142,7 +1212,12 @@ sealed class OverlayForm : Form
         if (pause == null || pause.Changing) return;
         try
         {
-            if (pause.Count > 0) await pause.ResumeAsync();
+            if (pause.Count > 0)
+            {
+                // you've likely just switched accounts: fetch the new numbers so the red state can clear
+                if (LimitHit) _ = usageMonitor?.RefreshAsync();
+                await pause.ResumeAsync();
+            }
             else await pause.PauseAsync(snapshot.Sessions);
         }
         catch (Exception ex) { Log.Write("pause: " + ex.GetType().Name); }
@@ -1292,6 +1367,7 @@ sealed class OverlayForm : Form
         if (usageMonitor != null) items.Add(Toggle("Plan usage", settings.PlanUsage, () => SetPlanUsage(!settings.PlanUsage)));
         if (usageMonitor != null && settings.PlanUsage)
         {
+            items.Add(PauseAtMenu());
             items.Add("Refresh usage", null, (_, _) => _ = usageMonitor.RefreshAsync());
             items.Add("Usage details...", null, (_, _) =>
             {
@@ -1307,6 +1383,105 @@ sealed class OverlayForm : Form
         });
     }
 
+    // ---- pause at a usage limit ---------------------------------------------------------------
+
+    // One entry per limit the providers report, each with Off or a percentage.
+    ToolStripMenuItem PauseAtMenu()
+    {
+        var menu = new ToolStripMenuItem("Pause at usage limit") { Checked = settings.PauseAt.Count > 0 };
+        var known = new List<(Cli Provider, string Name, string Label, double? Now)>();
+        foreach (var info in usage)
+        foreach (var l in info.Limits.Where(l => l.Available))
+            if (!known.Any(k => k.Provider == info.Provider && k.Label == l.Label)) known.Add((info.Provider, info.ProviderName, l.Label, l.Percent));
+        foreach (string key in settings.PauseAt.Keys)
+        {
+            string[] parts = key.Split('|', 2);
+            if (parts.Length == 2 && Enum.TryParse(parts[0], out Cli provider) && !known.Any(k => k.Provider == provider && k.Label == parts[1]))
+                known.Add((provider, provider switch { Cli.Codex => "Codex", Cli.Agy => "Gemini", _ => "Claude" }, parts[1], null));
+        }
+        if (known.Count == 0)
+        {
+            menu.DropDownItems.Add(new ToolStripMenuItem("No usage reported yet") { Enabled = false });
+            return menu;
+        }
+        foreach (var k in known)
+        {
+            int? at = LimitGuard.Threshold(settings.PauseAt, k.Provider, k.Label);
+            var item = new ToolStripMenuItem($"{k.Name} · {k.Label}" + (at is int a ? $": pause at {a}%" : "") +
+                                             (k.Now is double now ? $"   (now {now:0}%)" : "")) { Checked = at != null };
+            item.DropDownItems.Add(Toggle("Off", at == null, () => SetPauseAt(k.Provider, k.Label, null)));
+            foreach (int pct in LimitGuard.Choices)
+                item.DropDownItems.Add(Toggle($"{pct}%", at == pct, () => SetPauseAt(k.Provider, k.Label, pct)));
+            menu.DropDownItems.Add(item);
+        }
+        menu.DropDownItems.Add(new ToolStripSeparator());
+        menu.DropDownItems.Add(new ToolStripMenuItem("Pauses that provider's working sessions and turns the overlay red") { Enabled = false });
+        return menu;
+    }
+
+    void SetPauseAt(Cli provider, string label, int? percent)
+    {
+        string key = LimitGuard.KeyFor(provider, label);
+        if (percent is int p) settings.PauseAt[key] = p;
+        else settings.PauseAt.Remove(key);
+        settings.LimitTrips.Remove(key);  // a new setting is judged fresh, so one already reached trips now
+        Log.Write($"pause at limit: {key} -> {(percent is int v ? v + "%" : "off")}");
+        CheckLimits();
+    }
+
+    // Runs on every usage update. A limit that just reached its setting pauses that provider's
+    // working sessions, raises a toast and turns the overlay red.
+    void CheckLimits()
+    {
+        var tripped = limits.Update(usage, DateTime.UtcNow, out bool changed);
+        foreach (var t in tripped)
+        {
+            int count = snapshot.Sessions.Count(s => s.Source == t.Provider && SessionPause.CanPause(s) && !IsPaused(s));
+            Log.Write($"limit hit: {t.ProviderName} {t.Label} at {t.Percent:0}% (pause at {t.Threshold}%), pausing {count}");
+            limitPausePending.Add(t.Provider);
+            tray?.ShowBalloonTip(10000, ToolText.Clip($"⛔ {t.ProviderName} {t.Label} hit {t.Percent:0}%", 63),
+                count > 0 ? $"Paused {count} {t.ProviderName} session{(count == 1 ? "" : "s")}. Switch accounts, then press Play to resume."
+                          : $"No {t.ProviderName} sessions were working. Switch accounts before starting more.", ToolTipIcon.None);
+        }
+        if (tripped.Count > 0) SystemSounds.Hand.Play();
+        if (changed) settings.Save();
+        FlushLimitPause();
+        RefreshLimitHits();
+    }
+
+    // PauseAsync ignores a call while Play or another pause is mid-flight, so hold the request
+    // until the next snapshot instead of losing it.
+    async void FlushLimitPause()
+    {
+        if (pause == null || pause.Changing || limitPausePending.Count == 0) return;
+        var providers = limitPausePending.ToList();
+        limitPausePending.Clear();
+        try { await pause.PauseAsync(snapshot.Sessions.Where(s => providers.Contains(s.Source)).ToList()); }
+        catch (Exception ex) { Log.Write("limit pause: " + ex.GetType().Name); }
+    }
+
+    void DismissLimitHit()
+    {
+        if (!limits.Dismiss()) return;
+        settings.Save();
+        RefreshLimitHits();
+    }
+
+    void RefreshLimitHits()
+    {
+        bool was = LimitHit;
+        limitHits = limits.Active(usage);
+        if (was != LimitHit && IsHandleCreated)
+        {
+            int border = ColorTranslator.ToWin32(LimitHit ? Palette.GpuHot : Palette.Border);
+            Native.DwmSetWindowAttribute(Handle, Native.DWMWA_BORDER_COLOR, ref border, sizeof(int));
+        }
+        LayoutRows();
+        Invalidate();
+        UpdateTray();
+        UpdateTaskbar();
+    }
+
     // Off means no login tokens are read and no quota requests are sent; the strip and the taskbar
     // progress go away with it.
     void SetPlanUsage(bool on)
@@ -1320,8 +1495,7 @@ sealed class OverlayForm : Form
         }
         usageMonitor.Stop();
         usage = Array.Empty<UsageInfo>();
-        UpdateTray();
-        UpdateTaskbar();
+        RefreshLimitHits();
     }
 
     ToolStripMenuItem Toggle(string text, bool on, Action flip, bool enabled = true) =>

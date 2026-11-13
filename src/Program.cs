@@ -166,7 +166,7 @@ static class Program
                 using var usageMonitor = new UsageMonitor(claudeDir);
                 usage = usageMonitor.RefreshAsync().GetAwaiter().GetResult();
             }
-            using var preview = new OverlayForm(claudeDir, null, snap, usage, args.Contains("--paused"));
+            using var preview = new OverlayForm(claudeDir, null, snap, usage, args.Contains("--paused"), ArgValue(args, "--limit-hit"));
             preview.RenderTo(png);
             return 0;
         }
