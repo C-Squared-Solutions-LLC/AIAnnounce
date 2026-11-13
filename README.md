@@ -113,7 +113,7 @@ These are internal formats of all three CLIs, and an update can change them. Che
 
 Launching it again while it runs just brings the overlay back if it was hidden.
 
-- The **–** button at the top left hides the overlay. The tray icon or the taskbar button brings it back.
+- The **–** button at the top right hides the overlay. The tray icon or the taskbar button brings it back.
 - Drag anywhere to move; it snaps to screen edges. Double-click the header to collapse it to one line.
 - Right-click, or the `⋯` button: hide idle sessions, notifications and sounds (separately for **When a session needs you** and **When a session finishes**), opacity, taskbar button, start with Windows, plan usage, pause at usage limit, refresh usage, reset position. Turning a sound on plays it once.
 - Right-click a session: go to terminal, open folder, copy session ID, dismiss its ✋, restart it.

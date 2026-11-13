@@ -758,13 +758,8 @@ sealed class OverlayForm : Form
         Fill(g, r, LimitHit ? Palette.LimitHeader : Palette.Header);
         int alerts = snapshot.Sessions.Count(IsAlert);
         int busy = snapshot.Sessions.Count(s => s.IsWorking && !IsPaused(s));
-        // minimize: hides the overlay; the tray icon or taskbar button brings it back
-        hideButton = new Rectangle(r.Left + Px(5), r.Top + Px(5), Px(24), r.Height - Px(10));
-        if (hoverHide) FillRound(g, hideButton, Px(5), LimitHit ? Palette.LimitBand : Palette.Hover);
-        Fill(g, new Rectangle(hideButton.Left + Px(7), hideButton.Top + hideButton.Height / 2 + Px(2), hideButton.Width - Px(14), Math.Max(1, Px(2))),
-            hoverHide ? Palette.Text : Palette.Dim);
-        BrandIcons.DrawApp(g, new Rectangle(r.Left + Px(33), r.Top + Px(6), Px(22), Px(22)));
-        int x = r.Left + Px(61);
+        BrandIcons.DrawApp(g, new Rectangle(r.Left + Px(9), r.Top + Px(6), Px(22), Px(22)));
+        int x = r.Left + Px(37);
         int titleWidth = Measure("AI Announce", fonts.Title);
         Draw(g, "AI Announce", fonts.Title, new Rectangle(x, r.Top, titleWidth + 2, r.Height), Palette.Text);
         x += titleWidth + Px(8);
@@ -778,8 +773,14 @@ sealed class OverlayForm : Form
             Draw(g, count, fonts.Name, new Rectangle(x + Px(23), alertPill.Top, alertPill.Width - Px(24), alertPill.Height), Palette.AmberText);
             x = alertPill.Right + Px(8);
         }
-        menuButton = new Rectangle(r.Right - Px(32), r.Top + Px(5), Px(26), r.Height - Px(10));
-        if (hoverMenu) FillRound(g, menuButton, Px(5), Palette.Hover);
+        // minimize, top right where a window's usually is: hides the overlay; the tray icon or
+        // taskbar button brings it back
+        hideButton = new Rectangle(r.Right - Px(30), r.Top + Px(5), Px(24), r.Height - Px(10));
+        if (hoverHide) FillRound(g, hideButton, Px(5), LimitHit ? Palette.LimitBand : Palette.Hover);
+        Fill(g, new Rectangle(hideButton.Left + Px(7), hideButton.Top + hideButton.Height / 2 + Px(2), hideButton.Width - Px(14), Math.Max(1, Px(2))),
+            hoverHide ? Palette.Text : Palette.Dim);
+        menuButton = new Rectangle(hideButton.Left - Px(28), r.Top + Px(5), Px(26), r.Height - Px(10));
+        if (hoverMenu) FillRound(g, menuButton, Px(5), LimitHit ? Palette.LimitBand : Palette.Hover);
         Draw(g, "⋯", fonts.Name, menuButton, Palette.Dim, CenterText);
 
         bool play = PausedCount > 0;
