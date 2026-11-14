@@ -90,6 +90,7 @@ sealed class OverlayForm : Form
     readonly Settings settings;
     readonly SessionMonitor? monitor;
     readonly UsageMonitor? usageMonitor;
+    readonly ClaudeUsageFeed? claudeFeed;
     readonly NotifyIcon? tray;
     readonly Icon? idleIcon, alertIcon;
     TaskbarButton? taskbarButton;
@@ -187,6 +188,7 @@ sealed class OverlayForm : Form
         pause.Changed += () => { LayoutRows(); Invalidate(); UpdateTray(); UpdateTaskbar(); };
         monitor.Updated += s => Post(() => Apply(s));
         usageMonitor = new UsageMonitor(claudeDir);
+        claudeFeed = new ClaudeUsageFeed(claudeDir);
         // a refresh already in flight when Plan usage was switched off must not bring the strip back
         usageMonitor.Updated += u => Post(() => { if (settings.PlanUsage) ApplyUsage(u); });
 
@@ -1369,6 +1371,15 @@ sealed class OverlayForm : Form
         if (usageMonitor != null && settings.PlanUsage)
         {
             items.Add(PauseAtMenu());
+            if (claudeFeed != null)
+            {
+                bool on = claudeFeed.Connected;
+                items.Add(new ToolStripMenuItem("Claude usage from status line", null, (_, _) => SetClaudeFeed(!on))
+                {
+                    Checked = on,
+                    ToolTipText = "Session and week come from Claude Code's own status line: live, and never rate-limited.",
+                });
+            }
             items.Add("Refresh usage", null, (_, _) => _ = usageMonitor.RefreshAsync());
             items.Add("Usage details...", null, (_, _) =>
             {
@@ -1382,6 +1393,34 @@ sealed class OverlayForm : Form
             settings.Save();
             PlaceInitially();
         });
+    }
+
+    // Points Claude Code's statusLine at this exe, or puts back what was there.
+    void SetClaudeFeed(bool on)
+    {
+        if (claudeFeed == null || tray == null) return;
+        try
+        {
+            if (on)
+            {
+                string? problem = Environment.ProcessPath is string exe ? claudeFeed.Connect(exe) : "Could not find this program's path.";
+                Log.Write("claude status line: " + (problem ?? "connected"));
+                tray.ShowBalloonTip(8000, problem == null ? "Claude usage from status line is on" : "Claude usage feed not connected",
+                    problem ?? "Each Claude session's status line now shows Session and Week, and the overlay updates with every reply.",
+                    ToolTipIcon.None);
+            }
+            else
+            {
+                claudeFeed.Disconnect();
+                Log.Write("claude status line: disconnected");
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidOperationException)
+        {
+            Log.Write("claude status line: " + ex.Message);
+            tray.ShowBalloonTip(8000, "Claude usage feed not changed", "Could not update ~/.claude/settings.json: " + ex.Message, ToolTipIcon.None);
+        }
+        _ = usageMonitor?.RefreshAsync();
     }
 
     // ---- pause at a usage limit ---------------------------------------------------------------

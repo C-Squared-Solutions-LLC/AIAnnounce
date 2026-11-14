@@ -58,15 +58,22 @@ sealed class ClaudeUsageMonitor : IDisposable
     string? lastLogin;
     // The account the numbers on screen belong to, so a switch drops the old account's numbers.
     string? account;
-    sealed record SavedUsage(UsageInfo? Info, DateTime RetryAfter, string? Failure, string? BackoffLogin = null, string? Account = null);
+    // Status-line samples from before the last account switch belong to the old account.
+    DateTime switchedAt;
+    readonly ClaudeUsageFeed? feed;
+    static readonly TimeSpan FeedFresh = TimeSpan.FromMinutes(10);
+    sealed record SavedUsage(UsageInfo? Info, DateTime RetryAfter, string? Failure, string? BackoffLogin = null, string? Account = null,
+        DateTime SwitchedAt = default);
 
     public ClaudeUsageMonitor(string claudeDir) : this(claudeDir, Http,
-        Path.Combine(Settings.Dir, "claude-usage-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(claudeDir).ToUpperInvariant())))[..16] + ".json")) { }
+        Path.Combine(Settings.Dir, "claude-usage-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(claudeDir).ToUpperInvariant())))[..16] + ".json"),
+        new ClaudeUsageFeed(claudeDir)) { }
 
-    internal ClaudeUsageMonitor(string claudeDir, HttpClient http, string statePath)
+    internal ClaudeUsageMonitor(string claudeDir, HttpClient http, string statePath, ClaudeUsageFeed? feed = null)
     {
         this.http = http;
         this.statePath = statePath;
+        this.feed = feed;
         credentialsPath = Path.Combine(claudeDir, ".credentials.json");
         // .claude.json lives beside the .claude folder, or inside it when CLAUDE_CONFIG_DIR is set
         string inside = Path.Combine(claudeDir, ".claude.json");
@@ -82,6 +89,7 @@ sealed class ClaudeUsageMonitor : IDisposable
                 failure = saved.Failure;
                 backoffLogin = saved.BackoffLogin;
                 account = saved.Account;
+                switchedAt = saved.SwitchedAt;
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { }
@@ -101,6 +109,37 @@ sealed class ClaudeUsageMonitor : IDisposable
         return token != null && Fingerprint(token) != lastLogin;
     }
 
+    // True while Claude Code's status line is feeding current numbers, so the endpoint is only
+    // needed for the model limits and can be asked far less often.
+    public bool FeedLive => FeedSample(DateTime.UtcNow) is { } s && DateTime.UtcNow - s.At <= FeedFresh;
+
+    ClaudeUsageFeed.Sample? FeedSample(DateTime now) => feed?.Read(now) is { } s && s.At > switchedAt ? s : null;
+
+    // What the overlay shows: the endpoint's numbers with Session and Week replaced by the status
+    // line's whenever those are newer. Cheap: one small local file.
+    public UsageInfo? Current(UsageInfo? api = null)
+    {
+        api ??= Last;
+        DateTime now = DateTime.UtcNow;
+        var sample = FeedSample(now);
+        if (sample == null || (api is { Live: true } && api.FetchedAt >= sample.At)) return api;
+        var limits = new List<UsageLimit>();
+        void Window(string label, ClaudeUsageFeed.Window? w)
+        {
+            if (w != null && !(w.ResetsAt <= now)) limits.Add(new UsageLimit(label, w.Percent, w.ResetsAt, ""));
+            else if (api?.Limits.FirstOrDefault(l => l.Label == label && l.Available) is { } fallback) limits.Add(fallback);
+        }
+        Window("Session", sample.Session);
+        Window("Week", sample.Week);
+        if (api != null) limits.AddRange(api.Limits.Where(l => l.Available && l.Label is not ("Session" or "Week")));
+        if (limits.Count == 0) return api;
+        bool live = now - sample.At <= FeedFresh;
+        string message = (live ? "Session and week from Claude Code's status line."
+                               : $"Session and week as Claude Code's status line last reported them, at {sample.At.ToLocalTime():t}.")
+                         + (api?.Message is string other && !api.Live ? " Model limits: " + other : "");
+        return new UsageInfo(limits, api?.Plan, sample.At, live, Cli.Claude, Message: message);
+    }
+
     internal static string Fingerprint(string token) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)))[..16];
 
     public async Task<UsageInfo?> RefreshAsync()
@@ -118,6 +157,7 @@ sealed class ClaudeUsageMonitor : IDisposable
                 Log.Write("usage: Claude account changed, dropping the previous account's numbers");
                 Last = null;
                 failure = null;
+                switchedAt = DateTime.UtcNow;
             }
             if (current != null) account = current;
             UsageInfo? info = null;
@@ -140,14 +180,16 @@ sealed class ClaudeUsageMonitor : IDisposable
             }
             Last = info;
             SaveState();
-            Updated?.Invoke(info);
-            return info;
+            var shown = Current(info) ?? info;
+            Updated?.Invoke(shown);
+            return shown;
         }
         catch (Exception ex)
         {
             Log.Write("usage: refresh failed (" + ex.GetType().Name + ")");
             failure = "Could not refresh Claude usage; displaying the last available data.";
-            return Last = Last != null ? Last with { Live = false, Message = failure } : UsageInfo.Unavailable(Cli.Claude, failure);
+            Last = Last != null ? Last with { Live = false, Message = failure } : UsageInfo.Unavailable(Cli.Claude, failure);
+            return Current(Last);
         }
         finally
         {
@@ -233,7 +275,7 @@ sealed class ClaudeUsageMonitor : IDisposable
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(statePath))!);
-            File.WriteAllText(temporary, JsonSerializer.Serialize(new SavedUsage(Last, backoffUntil, failure, backoffLogin, account)));
+            File.WriteAllText(temporary, JsonSerializer.Serialize(new SavedUsage(Last, backoffUntil, failure, backoffLogin, account, switchedAt)));
             File.Move(temporary, statePath, overwrite: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }

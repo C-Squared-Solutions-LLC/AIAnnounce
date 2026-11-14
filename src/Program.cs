@@ -17,6 +17,10 @@ static class Program
     static int Main(string[] args)
     {
         if (args.Contains("--agy-statusline")) return AgyUsageFeed.Receive();
+        string claudeDir = ArgValue(args, "--claude-dir")
+                           ?? Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR")
+                           ?? Path.Combine(UserPaths.Home, ".claude");
+        if (args.Contains(ClaudeUsageFeed.Flag)) return ClaudeUsageFeed.Receive(new ClaudeUsageFeed(claudeDir));
         // The installer runs this just before it deletes the exe: undo what outside the app still points at it.
         if (args.Contains("--uninstall") && Environment.ProcessPath is string self)
         {
@@ -26,6 +30,7 @@ static class Program
             {
                 Log.Write("agy status line cleanup: " + ex.Message);
             }
+            new ClaudeUsageFeed(claudeDir).Disconnect(self);
             return 0;
         }
         if (ArgValue(args, "--write-icon") is string iconPath)
@@ -34,10 +39,6 @@ static class Program
             BrandIcons.WriteIcon(output);
             return 0;
         }
-        string claudeDir = ArgValue(args, "--claude-dir")
-                           ?? Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR")
-                           ?? Path.Combine(UserPaths.Home, ".claude");
-
         // the diagnostics below print to the shell that started them
         if (args.Any(a => a is "--dump" or "--bench" or "--tabs" or "--type" or "--screen" or "--stop" or "--restart" or "--focus"))
             ConsoleOut.Use();

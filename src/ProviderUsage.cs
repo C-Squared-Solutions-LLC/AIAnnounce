@@ -23,7 +23,7 @@ sealed class UsageMonitor : IDisposable
     readonly AgyUsage agy = new();
     readonly SemaphoreSlim gate = new(1, 1);
     Timer? timer;
-    DateTime nextRemote;
+    DateTime nextRemote, nextClaude;
     bool disposed;
     public IReadOnlyList<UsageInfo> Last { get; private set; } = Array.Empty<UsageInfo>();
     public event Action<IReadOnlyList<UsageInfo>>? Updated;
@@ -52,11 +52,15 @@ sealed class UsageMonitor : IDisposable
         try
         {
             if (disposed) return Last;
-            bool remote = force || DateTime.UtcNow >= nextRemote;
-            if (remote) nextRemote = DateTime.UtcNow.AddMinutes(3);
-            // a /login between the 3-minute checks gets its numbers on the next tick
-            bool claudeNow = remote || claude.LoginChanged();
-            var c = claudeNow ? claude.RefreshAsync() : Task.FromResult(claude.Last);
+            DateTime now = DateTime.UtcNow;
+            bool remote = force || now >= nextRemote;
+            if (remote) nextRemote = now.AddMinutes(3);
+            // With Claude Code's status line feeding Session and Week, the endpoint is only needed for
+            // model limits like Fable's, so it's asked every 15 minutes instead of every 3. A /login
+            // in between still gets checked on the next tick.
+            bool claudeNow = force || now >= nextClaude || claude.LoginChanged();
+            if (claudeNow) nextClaude = now.AddMinutes(claude.FeedLive ? 15 : 3);
+            var c = claudeNow ? claude.RefreshAsync() : Task.FromResult(claude.Current());
             var x = Task.Run(() => codex.ReadAsync(remote));
             var a = agy.ReadAsync(remote);
             await Task.WhenAll(c, x, a);

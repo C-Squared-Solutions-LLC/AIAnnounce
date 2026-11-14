@@ -174,10 +174,11 @@ static class Tests
         Check(agents.Entries[0].Notified && !sent.Last().Keys.Contains(ConsoleInput.Ctrl('k')), "No stop-agents chord is sent after agents are gone");
         await UsageChecks.Run(Check);
         await ClaudeUsageChecks.Run(Check);
+        await ClaudeFeedChecks.Run(Check);
         await AgyFeedChecks.Run(Check);
         TopmostMenuChecks.Run(Check);
         FinishChecks.Run(Check);
         LimitGuardChecks.Run(Check);
-        Console.WriteLine($"PASS: {checks} checks (quota schemas, credentials, diagnostics, menu z-order, pause/resume, persistence, identity, races, finish alerts and limit pauses)");
+        Console.WriteLine($"PASS: {checks} checks (quota schemas, credentials, diagnostics, menu z-order, pause/resume, persistence, identity, races, finish alerts, limit pauses and the Claude status-line feed)");
     }
 }
