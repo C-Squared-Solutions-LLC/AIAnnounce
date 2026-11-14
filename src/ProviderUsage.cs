@@ -54,7 +54,9 @@ sealed class UsageMonitor : IDisposable
             if (disposed) return Last;
             bool remote = force || DateTime.UtcNow >= nextRemote;
             if (remote) nextRemote = DateTime.UtcNow.AddMinutes(3);
-            var c = remote ? claude.RefreshAsync() : Task.FromResult(claude.Last);
+            // a /login between the 3-minute checks gets its numbers on the next tick
+            bool claudeNow = remote || claude.LoginChanged();
+            var c = claudeNow ? claude.RefreshAsync() : Task.FromResult(claude.Last);
             var x = Task.Run(() => codex.ReadAsync(remote));
             var a = agy.ReadAsync(remote);
             await Task.WhenAll(c, x, a);

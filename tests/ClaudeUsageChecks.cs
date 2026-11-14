@@ -14,6 +14,68 @@ static class ClaudeUsageChecks
         }
     }
 
+    sealed class LoginHandler(Func<string?, HttpResponseMessage> response) : HttpMessageHandler
+    {
+        public int Requests { get; private set; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Requests++;
+            return Task.FromResult(response(request.Headers.Authorization?.Parameter));
+        }
+    }
+
+    // /login to another account while the old one is rate-limited.
+    static async Task SwitchingAccounts(Action<bool, string> check)
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "AIAnnounce-switch-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string state = Path.Combine(dir, "state.json");
+        void SignIn(string token, string account) => File.WriteAllText(Path.Combine(dir, ".credentials.json"),
+            "{\"claudeAiOauth\":{\"accessToken\":\"" + token + "\",\"subscriptionType\":\"max\"}}");
+        // Claude Code's cache still holds account A's numbers whoever is signed in
+        const string cache = "\"cachedUsageUtilization\":{\"accountUuid\":\"acct-a\",\"fetchedAtMs\":1794433086700," +
+            "\"utilization\":{\"seven_day\":{\"utilization\":50,\"resets_at\":\"2099-11-18T12:00:00Z\"}}}";
+        void Account(string account) => File.WriteAllText(Path.Combine(dir, ".claude.json"),
+            "{\"oauthAccount\":{\"accountUuid\":\"" + account + "\"}," + cache + "}");
+        SignIn("login-a", "acct-a");
+        Account("acct-a");
+        var handler = new LoginHandler(token => token == "login-b"
+            ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{"seven_day":{"utilization":12,"resets_at":"2099-11-18T12:00:00Z"}}""") }
+            : new HttpResponseMessage(HttpStatusCode.TooManyRequests));
+        using var http = new HttpClient(handler);
+        using (var monitor = new ClaudeUsageMonitor(dir, http, state))
+        {
+            var limited = (await monitor.RefreshAsync())!;
+            check(!limited.Live && limited.Limits.Single(l => l.Available).Percent == 50 && limited.Message!.Contains("429"),
+                "A rate-limited login shows Claude's cached numbers for that same account");
+            await monitor.RefreshAsync();
+            check(handler.Requests == 1 && !monitor.LoginChanged(), "The same login sits out its back-off");
+
+            SignIn("login-b", "acct-b");
+            Account("acct-b");
+            check(monitor.LoginChanged(), "A /login is noticed without a request");
+            var switched = (await monitor.RefreshAsync())!;
+            check(handler.Requests == 2 && switched.Live && switched.Limits.Single().Percent == 12,
+                "A new login is checked right away instead of waiting out the old one's 429");
+
+            SignIn("login-c", "acct-c");
+            Account("acct-c");
+            var third = (await monitor.RefreshAsync())!;
+            check(third.Limits.All(l => !l.Available) && third.Message!.Contains("429"),
+                "After a switch, neither the last account's numbers nor another account's cache stand in for this one");
+        }
+        using (var reopened = new ClaudeUsageMonitor(dir, http, state))
+        {
+            await reopened.RefreshAsync();
+            check(handler.Requests == 3, "The back-off for the current login survives a restart");
+            SignIn("login-b", "acct-b");
+            Account("acct-b");
+            check((await reopened.RefreshAsync())!.Live && handler.Requests == 4, "Switching back after a restart is checked right away too");
+        }
+        string saved = File.ReadAllText(state);
+        check(!saved.Contains("login-a") && !saved.Contains("login-b") && !saved.Contains("login-c"), "Saved state holds login fingerprints, not tokens");
+    }
+
     public static async Task Run(Action<bool, string> check)
     {
         string dir = Path.Combine(Path.GetTempPath(), "AIAnnounce-claude-tests-" + Guid.NewGuid().ToString("N"));
@@ -96,6 +158,8 @@ static class ClaudeUsageChecks
             "Session, week and the first model limit share the row; the rest stay in the tooltip");
         check(UsageParsing.Shown(new[] { new UsageLimit("Week", 70, null, "") }, "").Select(c => c.Label).SequenceEqual(new[] { "Session", "Week" }),
             "Without a model limit the row still shows both windows");
+
+        await SwitchingAccounts(check);
 
         using var empty = new ClaudeUsageMonitor(Path.Combine(dir, "no-login"), http, Path.Combine(dir, "no-login-state.json"));
         check((await empty.RefreshAsync())!.Message!.Contains("No saved Claude login"), "Missing credentials retain a distinct diagnostic");

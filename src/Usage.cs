@@ -51,7 +51,14 @@ sealed class ClaudeUsageMonitor : IDisposable
     Timer? timer;
     DateTime backoffUntil;
     string? failure;
-    sealed record SavedUsage(UsageInfo? Info, DateTime RetryAfter, string? Failure);
+    // A 429 is about the login that got it. Switch accounts (or Claude refreshes the token) and the
+    // new login is asked right away instead of sitting out the old one's back-off. Both are short
+    // SHA-256 prefixes, never the token itself.
+    string? backoffLogin;
+    string? lastLogin;
+    // The account the numbers on screen belong to, so a switch drops the old account's numbers.
+    string? account;
+    sealed record SavedUsage(UsageInfo? Info, DateTime RetryAfter, string? Failure, string? BackoffLogin = null, string? Account = null);
 
     public ClaudeUsageMonitor(string claudeDir) : this(claudeDir, Http,
         Path.Combine(Settings.Dir, "claude-usage-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(claudeDir).ToUpperInvariant())))[..16] + ".json")) { }
@@ -73,6 +80,8 @@ sealed class ClaudeUsageMonitor : IDisposable
                     ? saved.Info with { Live = false } : null;
                 backoffUntil = saved.RetryAfter;
                 failure = saved.Failure;
+                backoffLogin = saved.BackoffLogin;
+                account = saved.Account;
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { }
@@ -84,20 +93,46 @@ sealed class ClaudeUsageMonitor : IDisposable
 
     public void Start() => timer = new Timer(_ => _ = RefreshAsync(), null, TimeSpan.Zero, Interval);
 
+    // Cheap enough for every 15-second tick: one small local file, no request. True when the
+    // login differs from the one the last refresh used, so a /login shows up within seconds.
+    public bool LoginChanged()
+    {
+        ReadCredentials(out string? token, out _);
+        return token != null && Fingerprint(token) != lastLogin;
+    }
+
+    internal static string Fingerprint(string token) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)))[..16];
+
     public async Task<UsageInfo?> RefreshAsync()
     {
         if (!await busy.WaitAsync(0)) return Last;
         try
         {
             string? plan = ReadCredentials(out string? token, out string? loginFailure);
+            string? login = token == null ? null : Fingerprint(token);
+            lastLogin = login;
+            string? current = ReadAccount();
+            if (current != null && account != null && current != account)
+            {
+                // the old account's numbers would read as this one's, and could hold the overlay red
+                Log.Write("usage: Claude account changed, dropping the previous account's numbers");
+                Last = null;
+                failure = null;
+            }
+            if (current != null) account = current;
             UsageInfo? info = null;
-            if (DateTime.UtcNow < backoffUntil) failure = BackoffMessage();
+            bool backedOff = DateTime.UtcNow < backoffUntil && (backoffLogin == null || backoffLogin == login);
+            if (backedOff) failure = BackoffMessage();
             else if (token != null)
+            {
+                DateTime before = backoffUntil;
                 info = await FetchAsync(token, plan);
+                if (backoffUntil != before && backoffUntil > DateTime.UtcNow) backoffLogin = login;  // a new 429, for this login
+            }
             else failure = loginFailure;
             if (info == null)
             {
-                var cached = ReadCache(plan);
+                var cached = ReadCache(plan, account);
                 if (Last is { FetchedAt: var fetched } && fetched != DateTime.MinValue && (cached == null || fetched >= cached.FetchedAt)) cached = Last;
                 string message = failure ?? "Claude returned no usage limits.";
                 info = cached != null ? cached with { Live = false, Message = message }
@@ -136,7 +171,8 @@ sealed class ClaudeUsageMonitor : IDisposable
                     ?? (response.Headers.RetryAfter?.Delta is TimeSpan delay ? DateTime.UtcNow.Add(delay) : DateTime.MinValue);
                 if (requested > backoffUntil) backoffUntil = requested;
                 failure = BackoffMessage();
-                Log.Write("usage: rate limited, backing off 10 min");
+                Log.Write($"usage: rate limited until {backoffUntil.ToLocalTime():t} for this login" +
+                          (response.Headers.RetryAfter != null ? " (Retry-After sent)" : ""));
                 return null;
             }
             if (!response.IsSuccessStatusCode)
@@ -150,7 +186,7 @@ sealed class ClaudeUsageMonitor : IDisposable
             using var doc = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync());
             var info = Parse(doc.RootElement, plan, DateTime.UtcNow, live: true);
             failure = info == null ? "Claude replied successfully but reported no recognized usage limits." : null;
-            if (info != null) backoffUntil = DateTime.MinValue;
+            if (info != null) { backoffUntil = DateTime.MinValue; backoffLogin = null; }
             return info;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
@@ -188,7 +224,7 @@ sealed class ClaudeUsageMonitor : IDisposable
         }
     }
 
-    string BackoffMessage() => $"Claude is rate-limiting usage checks (HTTP 429). Retrying after {backoffUntil.ToLocalTime():t}.";
+    string BackoffMessage() => $"Claude is rate-limiting usage checks for this login (HTTP 429). Retrying after {backoffUntil.ToLocalTime():t}, or as soon as you switch accounts.";
 
     void SaveState()
     {
@@ -197,7 +233,7 @@ sealed class ClaudeUsageMonitor : IDisposable
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(statePath))!);
-            File.WriteAllText(temporary, JsonSerializer.Serialize(new SavedUsage(Last, backoffUntil, failure)));
+            File.WriteAllText(temporary, JsonSerializer.Serialize(new SavedUsage(Last, backoffUntil, failure, backoffLogin, account)));
             File.Move(temporary, statePath, overwrite: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
@@ -208,13 +244,30 @@ sealed class ClaudeUsageMonitor : IDisposable
         }
     }
 
-    UsageInfo? ReadCache(string? plan)
+    // The signed-in account's id from .claude.json; /login rewrites it.
+    string? ReadAccount()
+    {
+        try
+        {
+            if (!File.Exists(configPath)) return null;
+            using var doc = JsonDocument.Parse(Json.ReadShared(configPath));
+            return Json.Str(Json.Get(doc.RootElement, "oauthAccount"), "accountUuid");
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    // Claude Code's own cached copy, but only when it's for the account signed in now.
+    UsageInfo? ReadCache(string? plan, string? forAccount)
     {
         try
         {
             if (!File.Exists(configPath)) return null;
             using var doc = JsonDocument.Parse(Json.ReadShared(configPath));
             var cached = Json.Get(doc.RootElement, "cachedUsageUtilization");
+            if (forAccount != null && Json.Str(cached, "accountUuid") is string owner && owner != forAccount) return null;
             var utilization = Json.Get(cached, "utilization");
             return utilization.ValueKind == JsonValueKind.Object
                 ? Parse(utilization, plan, Json.FromUnixMs(Json.Long(cached, "fetchedAtMs")), live: false)
